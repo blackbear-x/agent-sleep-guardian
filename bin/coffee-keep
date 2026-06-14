@@ -639,7 +639,7 @@ def main(argv: list[str] | None = None) -> int:
         daemon_loop()
         return 0
     if cmd == "status":
-        print_status(args.verbose)
+        print_status(getattr(args, "verbose", False))
         return 0
     if cmd == "doctor":
         print_doctor()
