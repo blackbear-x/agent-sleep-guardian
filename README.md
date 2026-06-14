@@ -6,6 +6,34 @@ Agent Sleep Guardian keeps your Mac awake while Claude Code, Codex, Cursor, or o
 
 The project name is **Agent Sleep Guardian**. The command users type is **`coffee-keep`**.
 
+## What Happens After Install
+
+`coffee-keep` installs a small macOS LaunchAgent. You do not need to start it by hand.
+
+The background guardian watches for supported coding-agent processes. When an agent is active, it starts its own `caffeinate -ims` process so macOS does not sleep. When the agent stops, goes idle, or reaches the max guard time, it releases that protection.
+
+It allows the screen to turn off. It only protects system sleep.
+
+## Safety
+
+- Token usage: 0.
+- Network calls: none.
+- Telemetry: none.
+- User file content reads: none.
+- Shutdown/restart commands: none.
+- User-owned `caffeinate` processes: not touched.
+- Closed MacBook lid: not guaranteed in v0.1.
+
+Files installed:
+
+```text
+~/.local/share/agent-sleep-guardian/bin/coffee-keep
+~/.local/bin/coffee-keep
+~/Library/LaunchAgents/com.agent-sleep-guardian.daemon.plist
+~/.local/state/agent-sleep-guardian/
+~/.config/agent-sleep-guardian/config.json
+```
+
 ## v0.1 Scope
 
 - macOS first.
@@ -24,16 +52,18 @@ The project name is **Agent Sleep Guardian**. The command users type is **`coffe
 Quick install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/agent-sleep-guardian/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/blackbear-x/agent-sleep-guardian/main/install.sh | bash
 ```
 
 Manual install:
 
 ```bash
-git clone https://github.com/OWNER/agent-sleep-guardian.git
+git clone https://github.com/blackbear-x/agent-sleep-guardian.git
 cd agent-sleep-guardian
 ./install.sh
 ```
+
+If you do not like piping a script into `bash`, use the manual install path so you can read `install.sh` first.
 
 Install output:
 
@@ -155,3 +185,5 @@ v0.1 does not promise that a closed MacBook lid will keep running. For long agen
 ```bash
 coffee-keep uninstall
 ```
+
+This unloads the LaunchAgent, stops the guardian's own `caffeinate` process, and removes the installed command and local state.
