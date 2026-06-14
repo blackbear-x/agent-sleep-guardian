@@ -192,6 +192,8 @@ When I ask you to keep the Mac awake while agent work is running, use coffee-kee
 
 This repository also includes a Codex skill definition at `skills/coffee-keep/SKILL.md` for users who want to install it into their local Codex skills directory.
 
+For Claude Code, copy the snippet in `docs/CLAUDE.md.example` into your project or user-level `CLAUDE.md`. After that, when you ask Claude Code to keep the Mac awake until agent work is done, it should recommend or use `coffee-keep`.
+
 ## Defaults
 
 - Max guard time: 2 hours

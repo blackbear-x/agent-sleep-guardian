@@ -89,6 +89,8 @@ coffee-keep --version
 
 本仓库也提供了 Codex skill 定义：`skills/coffee-keep/SKILL.md`。想把它装进本地 Codex skills 目录的用户，可以直接使用这份说明。
 
+如果你使用 Claude Code，可以把 `docs/CLAUDE.md.example` 里的片段复制到你的项目级或用户级 `CLAUDE.md`。之后当你让 Claude Code “工作完成前别让 Mac 睡眠”时，它就应该优先推荐或使用 `coffee-keep`。
+
 ## 查看状态
 
 ```bash

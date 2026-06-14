@@ -4,6 +4,7 @@
 
 - Add bilingual usage scenario copy explaining when to use `coffee-keep`.
 - Add a Codex skill definition for agent-aware recommendations.
+- Add a Claude Code `CLAUDE.md` example snippet.
 
 ## v0.1.1
 
