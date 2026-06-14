@@ -1,0 +1,676 @@
+#!/usr/bin/env python3
+"""Coffee Keep CLI for Agent Sleep Guardian."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import plistlib
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+APP_NAME = "Agent Sleep Guardian"
+COMMAND_NAME = "coffee-keep"
+LABEL = "com.agent-sleep-guardian.daemon"
+DEFAULT_MAX_GUARD_SECONDS = 2 * 60 * 60
+DEFAULT_IDLE_SECONDS = 15 * 60
+POLL_SECONDS = 15
+MAX_SESSIONS = 32
+
+HOME = Path.home()
+INSTALL_DIR = HOME / ".local" / "share" / "agent-sleep-guardian"
+BIN_DIR = HOME / ".local" / "bin"
+STATE_DIR = HOME / ".local" / "state" / "agent-sleep-guardian"
+LOG_DIR = HOME / ".local" / "state" / "agent-sleep-guardian" / "logs"
+CONFIG_PATH = HOME / ".config" / "agent-sleep-guardian" / "config.json"
+STATE_PATH = STATE_DIR / "state.json"
+PID_PATH = STATE_DIR / "daemon.pid"
+CAFFEINATE_PID_PATH = STATE_DIR / "caffeinate.pid"
+PAUSE_PATH = STATE_DIR / "paused"
+HEARTBEAT_DIR = STATE_DIR / "heartbeats"
+PLIST_PATH = HOME / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+
+SUPPORTED_AGENTS = {
+    "claude": "Claude Code",
+    "codex": "Codex",
+    "cursor": "Cursor",
+}
+
+
+@dataclass
+class ProcessInfo:
+    pid: int
+    name: str
+    command: str
+    cpu: float
+
+
+def ensure_dirs() -> None:
+    for path in (STATE_DIR, LOG_DIR, CONFIG_PATH.parent, HEARTBEAT_DIR):
+        path.mkdir(parents=True, exist_ok=True)
+
+
+def now() -> float:
+    return time.time()
+
+
+def load_config() -> dict[str, Any]:
+    defaults = {
+        "max_guard_seconds": DEFAULT_MAX_GUARD_SECONDS,
+        "idle_seconds": DEFAULT_IDLE_SECONDS,
+        "poll_seconds": POLL_SECONDS,
+        "max_sessions": MAX_SESSIONS,
+        "low_battery_percent": 20,
+    }
+    if CONFIG_PATH.exists():
+        try:
+            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                defaults.update(data)
+        except Exception:
+            pass
+    return defaults
+
+
+def write_json(path: Path, data: dict[str, Any]) -> None:
+    ensure_dirs()
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def log(message: str) -> None:
+    ensure_dirs()
+    path = LOG_DIR / "guardian.log"
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(f"[{stamp}] {message}\n")
+    rotate_log(path)
+
+
+def rotate_log(path: Path, max_bytes: int = 512_000) -> None:
+    try:
+        if path.stat().st_size <= max_bytes:
+            return
+        backup = path.with_suffix(".log.1")
+        if backup.exists():
+            backup.unlink()
+        path.rename(backup)
+    except OSError:
+        pass
+
+
+def command_exists(name: str) -> bool:
+    return shutil.which(name) is not None
+
+
+def run_capture(args: list[str]) -> str:
+    return subprocess.run(
+        args,
+        check=False,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+    ).stdout
+
+
+def is_pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def read_pid(path: Path) -> int | None:
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+        return int(text) if text else None
+    except Exception:
+        return None
+
+
+def write_pid(path: Path, pid: int) -> None:
+    ensure_dirs()
+    path.write_text(str(pid), encoding="utf-8")
+
+
+def daemon_running() -> bool:
+    pid = read_pid(PID_PATH)
+    return bool(pid and is_pid_alive(pid))
+
+
+def caffeinate_running() -> bool:
+    pid = read_pid(CAFFEINATE_PID_PATH)
+    return bool(pid and is_pid_alive(pid))
+
+
+def start_caffeinate() -> int | None:
+    if not command_exists("caffeinate"):
+        log("caffeinate not found")
+        return None
+    if caffeinate_running():
+        return read_pid(CAFFEINATE_PID_PATH)
+    ensure_dirs()
+    log_file = (LOG_DIR / "caffeinate.log").open("a", encoding="utf-8")
+    proc = subprocess.Popen(
+        ["caffeinate", "-ims"],
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    write_pid(CAFFEINATE_PID_PATH, proc.pid)
+    log(f"started owned caffeinate pid={proc.pid}")
+    return proc.pid
+
+
+def stop_caffeinate() -> None:
+    pid = read_pid(CAFFEINATE_PID_PATH)
+    if pid and is_pid_alive(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            log(f"stopped owned caffeinate pid={pid}")
+        except OSError:
+            pass
+    CAFFEINATE_PID_PATH.unlink(missing_ok=True)
+
+
+def list_processes() -> list[ProcessInfo]:
+    output = run_capture(["ps", "-axo", "pid=,comm=,pcpu=,args="])
+    rows: list[ProcessInfo] = []
+    this_pid = os.getpid()
+    for line in output.splitlines():
+        parts = line.strip().split(None, 3)
+        if len(parts) < 4:
+            continue
+        try:
+            pid = int(parts[0])
+            cpu = float(parts[2])
+        except ValueError:
+            continue
+        if pid == this_pid:
+            continue
+        rows.append(ProcessInfo(pid=pid, name=Path(parts[1]).name.lower(), cpu=cpu, command=parts[3]))
+    return rows
+
+
+def detect_agent_processes() -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    for proc in list_processes():
+        haystack = f"{proc.name} {proc.command}".lower()
+        if "agent-sleep-guardian" in haystack or "coffee-keep" in haystack:
+            continue
+        if is_noise_process(haystack):
+            continue
+        detected = detect_agent_name(haystack)
+        if not detected:
+            continue
+        needle, display = detected
+        found.append(
+            {
+                "id": f"{needle}:{proc.pid}",
+                "agent": display,
+                "source": "process",
+                "pid": proc.pid,
+                "cpu": proc.cpu,
+                "command": proc.command[:240],
+            }
+        )
+    return found[:MAX_SESSIONS]
+
+
+def is_noise_process(haystack: str) -> bool:
+    noise = [
+        "chrome_crashpad_handler",
+        " helper ",
+        " helper.app",
+        "gpu-process",
+        "utility-sub-type=network",
+        "bare-modifier-monitor",
+        "cursoruiviewservice",
+    ]
+    return any(item in haystack for item in noise)
+
+
+def detect_agent_name(haystack: str) -> tuple[str, str] | None:
+    if "claude" in haystack:
+        return "claude", SUPPORTED_AGENTS["claude"]
+    if "codex app-server" in haystack or "/codex.app/contents/macos/codex" in haystack:
+        return "codex", SUPPORTED_AGENTS["codex"]
+    if "/cursor.app/" in haystack or " cursor " in haystack or haystack.endswith("/cursor"):
+        return "cursor", SUPPORTED_AGENTS["cursor"]
+    return None
+
+
+def read_heartbeats() -> list[dict[str, Any]]:
+    ensure_dirs()
+    heartbeats: list[dict[str, Any]] = []
+    cutoff = now() - load_config()["idle_seconds"]
+    for path in HEARTBEAT_DIR.glob("*.json"):
+        data = read_json(path)
+        ts = float(data.get("updated_at", 0) or 0)
+        if ts < cutoff:
+            continue
+        name = str(data.get("agent") or path.stem)
+        status = str(data.get("status") or "active")
+        if status != "active":
+            continue
+        heartbeats.append(
+            {
+                "id": f"heartbeat:{path.stem}",
+                "agent": name,
+                "source": "heartbeat",
+                "updated_at": ts,
+            }
+        )
+    return heartbeats[:MAX_SESSIONS]
+
+
+def classify_sessions(previous: dict[str, Any], detected: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cfg = load_config()
+    idle_seconds = int(cfg["idle_seconds"])
+    previous_sessions = {s.get("id"): s for s in previous.get("sessions", []) if s.get("id")}
+    current = now()
+    sessions: list[dict[str, Any]] = []
+
+    for item in detected:
+        old = previous_sessions.get(item["id"], {})
+        last_activity = float(old.get("last_activity", current))
+        if item.get("source") == "heartbeat" or float(item.get("cpu", 0)) > 0.1 or not old:
+            last_activity = current
+        age = current - last_activity
+        status = "active" if age <= idle_seconds else "stale"
+        merged = dict(item)
+        merged.update(
+            {
+                "status": status,
+                "last_activity": last_activity,
+                "inactive_seconds": int(age),
+            }
+        )
+        sessions.append(merged)
+
+    return sessions[: int(cfg["max_sessions"])]
+
+
+def power_status() -> dict[str, Any]:
+    output = run_capture(["pmset", "-g", "batt"]) if command_exists("pmset") else ""
+    status = {"source": "unknown", "percent": None, "raw": output.strip()}
+    if "AC Power" in output:
+        status["source"] = "plugged in"
+    elif "Battery Power" in output:
+        status["source"] = "battery"
+    marker = "%"
+    if marker in output:
+        before = output.split(marker, 1)[0]
+        digits = "".join(ch for ch in before[-4:] if ch.isdigit())
+        if digits:
+            status["percent"] = int(digits)
+    return status
+
+
+def update_guard_state(reason: str = "") -> dict[str, Any]:
+    ensure_dirs()
+    previous = read_json(STATE_PATH)
+    cfg = load_config()
+    paused = PAUSE_PATH.exists()
+    detected = detect_agent_processes() + read_heartbeats()
+    sessions = classify_sessions(previous, detected)
+    active = [s for s in sessions if s.get("status") == "active"]
+    current = now()
+    guard_started_at = previous.get("guard_started_at")
+    max_reached = False
+
+    if active and not paused:
+        if not guard_started_at:
+            guard_started_at = current
+        max_reached = current - float(guard_started_at) >= int(cfg["max_guard_seconds"])
+        if max_reached:
+            stop_caffeinate()
+            guard_mode = "released"
+            release_reason = "max guard time reached"
+            guard_started_at = None
+        else:
+            start_caffeinate()
+            guard_mode = "blocked"
+            release_reason = ""
+    else:
+        stop_caffeinate()
+        guard_mode = "paused" if paused else "released"
+        release_reason = "paused" if paused else "all sessions inactive"
+        guard_started_at = None
+
+    state = {
+        "updated_at": current,
+        "daemon_pid": read_pid(PID_PATH),
+        "paused": paused,
+        "guard_mode": guard_mode,
+        "guard_started_at": guard_started_at,
+        "release_reason": release_reason,
+        "caffeinate_pid": read_pid(CAFFEINATE_PID_PATH) if caffeinate_running() else None,
+        "sessions": sessions,
+        "active_count": len(active) if not max_reached and not paused else 0,
+        "power": power_status(),
+        "config": cfg,
+        "reason": reason,
+    }
+    write_json(STATE_PATH, state)
+    return state
+
+
+def daemon_loop() -> None:
+    ensure_dirs()
+    write_pid(PID_PATH, os.getpid())
+    log(f"daemon started pid={os.getpid()}")
+    try:
+        while True:
+            cfg = load_config()
+            update_guard_state("daemon poll")
+            time.sleep(int(cfg.get("poll_seconds", POLL_SECONDS)))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop_caffeinate()
+        PID_PATH.unlink(missing_ok=True)
+        log("daemon stopped")
+
+
+def format_duration(seconds: float | int | None) -> str:
+    if seconds is None:
+        return "-"
+    seconds = int(max(0, seconds))
+    if seconds >= 3600:
+        return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+    if seconds >= 60:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+
+def print_status(verbose: bool = False) -> None:
+    state = update_guard_state("manual status") if daemon_running() else read_json(STATE_PATH)
+    if not state:
+        print("Mac sleep: unknown")
+        print("Background guardian: not running")
+        print("Run: coffee-keep enable")
+        return
+
+    mode = state.get("guard_mode", "unknown")
+    print(f"Mac sleep: {'blocked' if mode == 'blocked' else 'allowed'}")
+    print("Screen sleep: allowed")
+    print(f"Background guardian: {'running' if daemon_running() else 'not running'}")
+    print(f"Auto detection: {'paused' if state.get('paused') else 'enabled'}")
+    power = state.get("power", {})
+    percent = power.get("percent")
+    pct = f", {percent}%" if percent is not None else ""
+    print(f"Power: {power.get('source', 'unknown')}{pct}")
+    if mode != "blocked" and state.get("release_reason"):
+        print(f"Reason: {state['release_reason']}")
+    print()
+
+    sessions = state.get("sessions", [])
+    active = [s for s in sessions if s.get("status") == "active"]
+    stale = [s for s in sessions if s.get("status") == "stale"]
+    print(f"Agents: {len(sessions)} detected, {len(active)} active, {len(stale)} stale")
+    if verbose:
+        for session in sessions:
+            inactive = format_duration(session.get("inactive_seconds", 0))
+            detail = f", pid {session.get('pid')}" if session.get("pid") else ""
+            source = session.get("source", "unknown")
+            print(f"- {session.get('agent')}: {session.get('status')}, last activity {inactive} ago ({source}{detail})")
+            if session.get("command"):
+                print(f"  {session['command']}")
+    else:
+        for agent, items in grouped_sessions(sessions).items():
+            active_count = sum(1 for item in items if item.get("status") == "active")
+            stale_count = sum(1 for item in items if item.get("status") == "stale")
+            newest = min(int(item.get("inactive_seconds", 0)) for item in items)
+            bits = []
+            if active_count:
+                bits.append(f"{active_count} active")
+            if stale_count:
+                bits.append(f"{stale_count} stale")
+            print(f"- {agent}: {', '.join(bits)}, last activity {format_duration(newest)} ago")
+
+    cfg = state.get("config", load_config())
+    print()
+    print(f"Max guard time: {format_duration(cfg.get('max_guard_seconds'))}")
+    print(f"Idle timeout: {format_duration(cfg.get('idle_seconds'))}")
+    if state.get("guard_started_at"):
+        print(f"Guard running for: {format_duration(now() - float(state['guard_started_at']))}")
+    print()
+    print("Screen off is okay. Sleep is not.")
+    print("Lid closed: not guaranteed in v0.1.")
+
+
+def grouped_sessions(sessions: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for session in sessions:
+        grouped.setdefault(str(session.get("agent", "Unknown")), []).append(session)
+    return grouped
+
+
+def print_doctor() -> None:
+    state = update_guard_state("doctor") if daemon_running() else read_json(STATE_PATH)
+    cfg = load_config()
+    print(f"{APP_NAME} Doctor")
+    print()
+    print(f"macOS caffeinate: {'ok' if command_exists('caffeinate') else 'missing'}")
+    print(f"Background guardian: {'running' if daemon_running() else 'not running'}")
+    print(f"LaunchAgent: {'enabled' if PLIST_PATH.exists() else 'not installed'}")
+    power = power_status()
+    pct = f", {power['percent']}%" if power.get("percent") is not None else ""
+    print(f"Power: {power.get('source', 'unknown')}{pct}")
+    if power.get("source") == "battery":
+        print("Warning: plug in your Mac before leaving a long agent task.")
+    print()
+    print("Supported agents:")
+    print("  Claude Code: stable")
+    print("  Codex: stable")
+    print("  Cursor: stable")
+    print("  OpenClaw: beta, heartbeat recommended")
+    print()
+    print(f"Max guard time: {format_duration(cfg['max_guard_seconds'])}")
+    print(f"Idle timeout: {format_duration(cfg['idle_seconds'])}")
+    print("Resource use: lightweight polling daemon")
+    print("Token usage: 0")
+    print("Network: none")
+    print("Telemetry: none")
+    print()
+    ready = command_exists("caffeinate") and daemon_running()
+    if state.get("paused"):
+        ready = False
+    print("Screen may turn off. System can stay awake.")
+    print("Lid closed: not guaranteed in v0.1.")
+    print(f"Ready: {'yes' if ready else 'no'}")
+
+
+def launchctl_target() -> str:
+    return f"gui/{os.getuid()}"
+
+
+def launchctl_service() -> str:
+    return f"{launchctl_target()}/{LABEL}"
+
+
+def write_launch_agent(program_path: Path | None = None) -> None:
+    ensure_dirs()
+    program = str(program_path or INSTALL_DIR / "bin" / "coffee-keep")
+    plist = {
+        "Label": LABEL,
+        "ProgramArguments": [program, "daemon"],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ThrottleInterval": 10,
+        "StandardOutPath": str(LOG_DIR / "daemon.out.log"),
+        "StandardErrorPath": str(LOG_DIR / "daemon.err.log"),
+    }
+    PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with PLIST_PATH.open("wb") as fh:
+        plistlib.dump(plist, fh)
+
+
+def enable_launch_agent() -> None:
+    write_launch_agent()
+    subprocess.run(["launchctl", "bootout", launchctl_service()], check=False, capture_output=True)
+    subprocess.run(["launchctl", "bootstrap", launchctl_target(), str(PLIST_PATH)], check=False)
+    subprocess.run(["launchctl", "kickstart", "-k", launchctl_service()], check=False)
+    print("Auto guardian: enabled")
+    print("Background guardian: starting")
+
+
+def disable_launch_agent() -> None:
+    subprocess.run(["launchctl", "bootout", launchctl_service()], check=False, capture_output=True)
+    PLIST_PATH.unlink(missing_ok=True)
+    stop_caffeinate()
+    print("LaunchAgent disabled.")
+    print("Background guardian stopped.")
+
+
+def pause() -> None:
+    ensure_dirs()
+    PAUSE_PATH.write_text(str(now()), encoding="utf-8")
+    stop_caffeinate()
+    update_guard_state("paused")
+    print("Guardian paused.")
+    print("Mac sleep: allowed")
+
+
+def resume() -> None:
+    PAUSE_PATH.unlink(missing_ok=True)
+    update_guard_state("resumed")
+    print("Guardian resumed.")
+    print("Auto detection: enabled")
+
+
+def uninstall() -> None:
+    disable_launch_agent()
+    for path in (STATE_DIR, CONFIG_PATH.parent):
+        if path.exists():
+            shutil.rmtree(path)
+    symlink = BIN_DIR / COMMAND_NAME
+    if symlink.exists() or symlink.is_symlink():
+        symlink.unlink()
+    print()
+    print("Stopped owned caffeinate process.")
+    print("Deleted local state files.")
+    print("Uninstalled.")
+
+
+def heartbeat(args: argparse.Namespace) -> None:
+    ensure_dirs()
+    payload = {
+        "agent": args.agent,
+        "status": args.status,
+        "updated_at": now(),
+    }
+    write_json(HEARTBEAT_DIR / f"{args.agent.lower().replace(' ', '-')}.json", payload)
+    update_guard_state("heartbeat")
+    print(f"Heartbeat recorded: {args.agent} {args.status}")
+
+
+def run_wrapped(command: list[str]) -> int:
+    if not command:
+        print("Missing command after --", file=sys.stderr)
+        return 2
+    if not command_exists("caffeinate"):
+        print("macOS caffeinate is missing.", file=sys.stderr)
+        return 1
+    print("Sleep protection enabled for command.")
+    print("Screen sleep: allowed")
+    print("System sleep: blocked")
+    print()
+    proc = subprocess.run(["caffeinate", "-ims", *command], check=False)
+    print()
+    print("Command finished.")
+    print("Released sleep protection.")
+    return proc.returncode
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=COMMAND_NAME, description="Keep Mac awake while coding agents work.")
+    sub = parser.add_subparsers(dest="cmd")
+
+    status_p = sub.add_parser("status", help="Show current guard status.")
+    status_p.add_argument("--verbose", action="store_true")
+
+    sub.add_parser("doctor", help="Check install and runtime health.")
+    sub.add_parser("daemon", help=argparse.SUPPRESS)
+    sub.add_parser("enable", help="Enable and start the LaunchAgent.")
+    sub.add_parser("disable", help="Disable the LaunchAgent.")
+    sub.add_parser("pause", help="Pause automatic sleep protection.")
+    sub.add_parser("resume", help="Resume automatic sleep protection.")
+    sub.add_parser("uninstall", help="Remove LaunchAgent, symlink, and local state.")
+
+    hb = sub.add_parser("heartbeat", help="Record an active or idle heartbeat for beta integrations.")
+    hb.add_argument("--agent", required=True)
+    hb.add_argument("--status", choices=["active", "idle"], default="active")
+
+    run_p = sub.add_parser("run", help="Keep Mac awake while a command runs.")
+    run_p.add_argument("command", nargs=argparse.REMAINDER)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    cmd = args.cmd or "status"
+
+    if cmd == "daemon":
+        daemon_loop()
+        return 0
+    if cmd == "status":
+        print_status(args.verbose)
+        return 0
+    if cmd == "doctor":
+        print_doctor()
+        return 0
+    if cmd == "enable":
+        enable_launch_agent()
+        return 0
+    if cmd == "disable":
+        disable_launch_agent()
+        return 0
+    if cmd == "pause":
+        pause()
+        return 0
+    if cmd == "resume":
+        resume()
+        return 0
+    if cmd == "uninstall":
+        uninstall()
+        return 0
+    if cmd == "heartbeat":
+        heartbeat(args)
+        return 0
+    if cmd == "run":
+        command = args.command
+        if command and command[0] == "--":
+            command = command[1:]
+        return run_wrapped(command)
+
+    parser.print_help()
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
