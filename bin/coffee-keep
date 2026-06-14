@@ -19,6 +19,7 @@ from typing import Any
 
 APP_NAME = "Agent Sleep Guardian"
 COMMAND_NAME = "coffee-keep"
+VERSION = "0.1.1"
 LABEL = "com.agent-sleep-guardian.daemon"
 DEFAULT_MAX_GUARD_SECONDS = 2 * 60 * 60
 DEFAULT_IDLE_SECONDS = 15 * 60
@@ -445,9 +446,9 @@ def print_status(verbose: bool = False) -> None:
             newest = min(int(item.get("inactive_seconds", 0)) for item in items)
             bits = []
             if active_count:
-                bits.append(f"{active_count} active")
-            if stale_count:
-                bits.append(f"{stale_count} stale")
+                bits.append("active")
+            elif stale_count:
+                bits.append("stale")
             print(f"- {agent}: {', '.join(bits)}, last activity {format_duration(newest)} ago")
 
     cfg = state.get("config", load_config())
@@ -607,11 +608,13 @@ def run_wrapped(command: list[str]) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=COMMAND_NAME, description="Keep Mac awake while coding agents work.")
+    parser.add_argument("--version", action="version", version=f"{COMMAND_NAME} {VERSION}")
     sub = parser.add_subparsers(dest="cmd")
 
     status_p = sub.add_parser("status", help="Show current guard status.")
     status_p.add_argument("--verbose", action="store_true")
 
+    sub.add_parser("version", help="Show version.")
     sub.add_parser("doctor", help="Check install and runtime health.")
     sub.add_parser("daemon", help=argparse.SUPPRESS)
     sub.add_parser("enable", help="Enable and start the LaunchAgent.")
@@ -643,6 +646,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if cmd == "doctor":
         print_doctor()
+        return 0
+    if cmd == "version":
+        print(f"{COMMAND_NAME} {VERSION}")
         return 0
     if cmd == "enable":
         enable_launch_agent()

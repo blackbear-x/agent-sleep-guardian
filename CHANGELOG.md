@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.1
+
+- Add `coffee-keep --version` and `coffee-keep version`.
+- Make default status output easier to read by summarizing each agent as active or stale.
+- Add a Chinese README.
+- Document pinned install commands.
+- Make the installer print the files and LaunchAgent it will create before making changes.
+- Fix remote `curl | bash` installs by downloading `bin/coffee-keep` when the repo checkout is not present.
+- Add a minimal GitHub Actions check.
+
 ## v0.1.0
 
 Initial public beta.

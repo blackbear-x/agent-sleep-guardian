@@ -1,8 +1,12 @@
 # Agent Sleep Guardian
 
+[中文说明](README.zh-CN.md)
+
 Screen off is okay. Sleep is not.
 
-Agent Sleep Guardian keeps your Mac awake while Claude Code, Codex, Cursor, or other coding agents are working. When they stop, stall, or time out, it releases sleep protection so your Mac can return to normal sleep behavior.
+Agent Sleep Guardian keeps your Mac awake while coding agents work.
+
+It prevents system sleep while Claude Code, Codex, Cursor, or other coding agents are active. When they stop, stall, or time out, it releases sleep protection so your Mac can return to normal sleep behavior.
 
 The project name is **Agent Sleep Guardian**. The command users type is **`coffee-keep`**.
 
@@ -53,6 +57,12 @@ Quick install:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/blackbear-x/agent-sleep-guardian/main/install.sh | bash
+```
+
+Pinned install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/blackbear-x/agent-sleep-guardian/v0.1.1/install.sh | AGENT_SLEEP_GUARDIAN_REF=v0.1.1 bash
 ```
 
 Manual install:
@@ -142,6 +152,7 @@ Lid closed: not guaranteed in v0.1.
 ```bash
 coffee-keep status
 coffee-keep status --verbose
+coffee-keep --version
 coffee-keep doctor
 coffee-keep pause
 coffee-keep resume

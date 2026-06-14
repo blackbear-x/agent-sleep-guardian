@@ -1,0 +1,23 @@
+name: checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Python syntax
+        run: python3 -m py_compile bin/coffee-keep
+      - name: Check install shell syntax
+        run: bash -n install.sh
+      - name: Install shellcheck
+        run: brew install shellcheck
+      - name: Run shellcheck
+        run: shellcheck install.sh
+      - name: Smoke test CLI
+        run: |
+          ./bin/coffee-keep --version
+          ./bin/coffee-keep version
