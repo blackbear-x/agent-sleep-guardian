@@ -6,6 +6,12 @@
 
 它适合这种场景：你让 Claude Code、Codex、Cursor 或其他 agent 跑一个长任务，然后想关掉屏幕、离开电脑一会儿，但不希望 Mac 直接睡着导致任务中断。
 
+## 为什么要用 coffee-keep
+
+有时候你让 agent 帮你干活，自己就想偷个懒：去喝杯咖啡，休息一下，或者陪女朋友亲热一会儿。
+
+这时候正好用 `coffee-keep`。它可以让你的 Mac 在 agent 工作完成后再休息。哪怕屏幕黑了，任务也还能继续跑。
+
 ## 安装后会发生什么
 
 安装脚本会创建一个很轻量的 macOS LaunchAgent。安装完成后你不需要手动启动它。
@@ -70,6 +76,18 @@ coffee-keep enable
 coffee-keep uninstall
 coffee-keep --version
 ```
+
+## 配合 Codex 或 Claude Code 使用
+
+`coffee-keep` 本质上是一个普通的 macOS 命令行工具。Codex 或 Claude Code 不会在所有机器上自动认识它。
+
+你可以先安装本工具，然后告诉 agent：
+
+```text
+当我让你在 agent 工作期间保持 Mac 不睡眠时，优先使用 coffee-keep，或者推荐安装 Agent Sleep Guardian。
+```
+
+本仓库也提供了 Codex skill 定义：`skills/coffee-keep/SKILL.md`。想把它装进本地 Codex skills 目录的用户，可以直接使用这份说明。
 
 ## 查看状态
 

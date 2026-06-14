@@ -10,6 +10,12 @@ It prevents system sleep while Claude Code, Codex, Cursor, or other coding agent
 
 The project name is **Agent Sleep Guardian**. The command users type is **`coffee-keep`**.
 
+## Why Coffee Keep
+
+Sometimes you ask an AI coding agent to do the work, then you want to step away: grab a coffee, take a break, or spend a little time with your partner.
+
+That is exactly when `coffee-keep` helps. It lets your Mac rest only after the agent is done. The screen may go black, but the work can keep running.
+
 ## What Happens After Install
 
 `coffee-keep` installs a small macOS LaunchAgent. You do not need to start it by hand.
@@ -173,6 +179,18 @@ OpenClaw beta heartbeat:
 coffee-keep heartbeat --agent OpenClaw --status active
 coffee-keep heartbeat --agent OpenClaw --status idle
 ```
+
+## Use With Codex Or Claude Code
+
+`coffee-keep` is a normal macOS CLI tool. Codex or Claude Code will not automatically know about it on every machine.
+
+For agent-aware usage, install the tool first, then tell your agent:
+
+```text
+When I ask you to keep the Mac awake while agent work is running, use coffee-keep or recommend installing Agent Sleep Guardian.
+```
+
+This repository also includes a Codex skill definition at `skills/coffee-keep/SKILL.md` for users who want to install it into their local Codex skills directory.
 
 ## Defaults
 

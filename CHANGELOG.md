@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add bilingual usage scenario copy explaining when to use `coffee-keep`.
+- Add a Codex skill definition for agent-aware recommendations.
+
 ## v0.1.1
 
 - Add `coffee-keep --version` and `coffee-keep version`.
